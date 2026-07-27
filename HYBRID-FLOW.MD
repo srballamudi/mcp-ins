@@ -168,36 +168,81 @@ On save, the saving app asks the presence table who else is viewing the case
 source_app). The sender never inserts a row for themselves (no
 self-notifications).
 
-- Monolith producer: `CaseServiceImpl.java:10988` →
-  `DbCaseUpdateNotificationStore.insert` (store method at line 41,
-  source_app = `MONOLITH`), log marker `CROSS_APP_NOTIFICATION queued`
-  at line 10989.
-- Backend producer: `CaseServiceImpl.java:11710` →
-  `collaboration/dao/DbCaseUpdateNotificationStore.insert` (line 41,
-  source_app = `BACKEND`), log marker `cross-app-queued`.
+**Backend producer — `CaseServiceImpl.java:11700-11718`** (fan-out block inside
+the save-notification method). Walking the block top to bottom:
 
-### 4.2 Consumer side - monolith (polling)
+| Line | What you'll see / what to say |
+|---|---|
+| 11700-11701 | `getActiveViewers(caseId)` — asks the presence table who is viewing this case (both apps' viewers, already staleness-filtered) |
+| 11705-11706 | `continue` when the viewer IS the editor — "we never notify the person who made the change" |
+| 11708-11709 | de-dup: skips viewers already served by the local in-memory path (`deliveredLocally`), and a `HashSet` guards against double-queueing the same recipient |
+| 11710 | the actual outbox write: `caseUpdateNotificationStore.insert(...)` (store method `DbCaseUpdateNotificationStore.java:41`, source_app=BACKEND) |
+| 11711-11712 | audit log `CROSS_APP_NOTIFICATION queued` — the log marker used during validation |
+| 11715-11717 | catch-all: "cross-app fanout must never break the local save" — a DB hiccup here logs a warning, the save still succeeds |
 
-AngularJS polls its notification endpoint while a case is open
-(`ngEditCaseCtrl.js:7298` defines the URL; the `caseUpdateNotification`
-listener is at 7304). Each poll drains the rows addressed to the current user
-(`DbCaseUpdateNotificationStore.fetchAndDeleteMessages:55` - SELECT + DELETE,
-one-time delivery) and shows them. No server-side timers.
+**Monolith producer — `CaseServiceImpl.java:10988-10989`**: same pattern —
+`insert(...)` per cross-app viewer (store method at
+`collaboration/store/DbCaseUpdateNotificationStore.java:41`,
+source_app=MONOLITH), then the `CROSS_APP_NOTIFICATION queued` log.
 
-### 4.3 Consumer side - backend (SSE stream)
+### 4.2 Consumer side - monolith
 
-ng15 opens ONE persistent SSE stream per open case
-(`getCaseUpdateNotification`, `CaseServiceImpl.java:11266`; connect-time drain
-at 11331; lifecycle hooks at 11387-11389). In
-`CaseServiceImpl.startCaseNotificationHeartbeat` (line 11467, constants at
-204-211), each stream gets a scheduler ticking every **3 seconds**:
+The monolith UI uses `EventSource` (SSE) against its own endpoint; the endpoint
+serves pending messages and completes, and `EventSource` auto-reconnects — so
+in practice it behaves like a poll loop.
 
-```java
-// every 3s tick (CaseServiceImpl.java:11467):
-//   1) drain: fetchAndDeleteNextMessage(userId) in a loop, max 20 rows/tick (11485),
-//      push each down the SSE stream as event "caseUpdateNotification" (11494 logs it)
-//   2) every 5th tick (= 15s): send the keep-alive "heartbeat" ping (11508)
-```
+| Stop | File : line | What you'll see / what to say |
+|---|---|---|
+| 1 | `ngEditCaseCtrl.js:7298` | `GET_UPDATE_NOTIFICATION = "/cdrss/caseManagement/getCaseUpdateNotification"` — the URL constant |
+| 2 | `ngEditCaseCtrl.js:7302` | `new EventSource(url, { withCredentials: true })` — opens the stream while the case is open |
+| 3 | `ngEditCaseCtrl.js:7304` | `addEventListener('caseUpdateNotification', ...)` — receives the event and shows the toast |
+| 4 | `CaseController.java:2824-2825` | the server endpoint — returns an `SseEmitter` per connection |
+| 5 | `CaseController.java:2842` | **the cross-app drain**: `fetchAndDeleteMessages(principal.getName())` — pulls ALL outbox rows addressed to this user in one call (store method `DbCaseUpdateNotificationStore.java:55`, SELECT then DELETE by recipient = one-time delivery) |
+| 6 | `CaseController.java:2853` | log marker `Cross-app case update notifications merged` — proof in the logs that backend→monolith rows were picked up |
+
+### 4.3 Consumer side - backend (persistent SSE stream)
+
+ng15 holds ONE long-lived SSE stream per open case. Two methods matter — the
+stream setup and the per-stream scheduler. All in
+`caseManagement/service/CaseServiceImpl.java`:
+
+**Stream setup — `getCaseUpdateNotificationStream(Long caseId)` at 11346:**
+
+| Line | What you'll see / what to say |
+|---|---|
+| 11350 | `new SseEmitter(timeout)` — stream created with a timeout so stale streams self-close |
+| 11352-11363 | guards: invalid caseId or missing auth context → complete immediately (polling can race session refresh) |
+| 11367-11370 | registers the emitter in `caseNotifEmitterCache` (per-case map keyed by userId) |
+| 11380-11384 | if the same user reconnects (or opens a duplicate tab), the OLD stream's heartbeat is cancelled and the old emitter completed — one stream per user/case |
+| 11387-11389 | lifecycle hooks: completion / timeout / error all route to `removeCaseNotificationEmitter` — no leak path |
+| 11391 | `startCaseNotificationHeartbeat(...)` — hands the stream to the scheduler (next table) |
+| 11395 | sends a `connected` event with a 5s reconnect hint for the EventSource client |
+
+**Per-stream scheduler — `startCaseNotificationHeartbeat` at 11467**
+(constants at 204-211: 15s ping, 3s tick, 5 ticks per ping):
+
+| Line | What you'll see / what to say |
+|---|---|
+| 11467-11471 | method + comment block: one scheduled task per stream, ticking every 3s |
+| 11485 | the drain loop: `fetchAndDeleteNextMessage(userId)` repeatedly, capped at 20 rows/tick — "this is why monolith→backend latency is ≤3s" |
+| 11494 | audit log `cross-app-heartbeat-delivered` with the delivered count |
+| 11508 | the ping gate: `tickCounter.incrementAndGet() % HEARTBEAT_TICKS_PER_PING == 0` — ping only every 5th tick, preserving the original 15s keep-alive cadence toward proxies |
+| 11513 | ping failure → `removeCaseNotificationEmitter` + `completeWithError` — a dead client tears its own stream down |
+
+**Cleanup — `removeCaseNotificationEmitter` at 11426** (every stream-death path
+lands here):
+
+| Line | What you'll see / what to say |
+|---|---|
+| 11428 | cancels the heartbeat task FIRST — "a cancelled stream must never keep pinging" |
+| 11429-11437 | if the emitter registry is already gone, still clean the viewer registry and log `stream-remove-skipped` (audit trail, not silent) |
+| 11439-11442 | removes this exact emitter from the per-case map; drops the map when empty |
+| 11443-11445 | removes the user from the viewer registry ONLY if this exact emitter was removed — "if `removed=false`, a newer stream replaced this one, so the user is still viewing and must stay registered" |
+
+**Also worth knowing:** the backend ALSO has a legacy polling endpoint
+(`getCaseUpdateNotification(Long caseId)` at 11266). Its cross-app hook is
+`fetchCrossAppNotification` at 11326 (drain call at 11331): fail-open, returns
+null when the DB store is off — so polling clients get cross-app messages too.
 
 Design decisions worth knowing:
 
@@ -321,16 +366,18 @@ monolith = `feature/hybrid-lock-viewer-monolith-localtest-v2` (PR 10380).
 | 204 | `CASE_NOTIFICATION_HEARTBEAT_INTERVAL_MS = 15_000L` (ping cadence) |
 | 210 | `CASE_NOTIFICATION_TICK_INTERVAL_MS = 3_000L` (drain cadence) |
 | 211 | `HEARTBEAT_TICKS_PER_PING` (= 5, derived) |
-| 11266 | `getCaseUpdateNotification(caseId)` - SSE stream endpoint entry |
-| 11331 | connect-time drain (`fetchAndDeleteNextMessage`) |
+| 11266 | `getCaseUpdateNotification(caseId)` - legacy POLLING endpoint (one message per call) |
+| 11326 | `fetchCrossAppNotification(userId)` - cross-app hook for the polling path (drain at 11331, fail-open) |
+| 11346 | `getCaseUpdateNotificationStream(caseId)` - the persistent SSE stream endpoint |
+| 11367-11370 | emitter registered in `caseNotifEmitterCache`; old stream replaced on reconnect (11380-11384) |
 | 11387-11389 | emitter lifecycle hooks (completion/timeout/error -> remove) |
 | 11391 | `startCaseNotificationHeartbeat(...)` call |
-| 11426 | `removeCaseNotificationEmitter(...)` - stream cleanup |
+| 11426 | `removeCaseNotificationEmitter(...)` - single cleanup path for all stream deaths |
 | 11467 | `startCaseNotificationHeartbeat(...)` - the 3s tick scheduler |
 | 11485 | per-tick drain loop (max 20 rows/tick) |
 | 11494 | log marker `cross-app-heartbeat-delivered` |
 | 11508 | ping gate: `tickCounter % HEARTBEAT_TICKS_PER_PING == 0` |
-| 11710 | producer: `caseUpdateNotificationStore.insert(...)` on save |
+| 11700-11718 | producer fan-out block (insert at 11710, `CROSS_APP_NOTIFICATION queued` log at 11711) |
 
 **`collaboration/dao/DbCaseUpdateNotificationStore.java`**
 
@@ -378,6 +425,9 @@ monolith = `feature/hybrid-lock-viewer-monolith-localtest-v2` (PR 10380).
 | 1691 | `acquireLock(...)` - entry point |
 | 1752 | `releaseLock(...)` - entry point |
 | 1814 | `parseLongOrNull(...)` helper (with Javadoc on the routing contract) |
+| 2824-2825 | `getCaseUpdateNotification(...)` - SSE endpoint serving the AngularJS EventSource |
+| 2842 | cross-app drain: `fetchAndDeleteMessages(principal.getName())` |
+| 2853 | log marker `Cross-app case update notifications merged` |
 
 **`caseManagement/service/CaseServiceImpl.java`**
 
