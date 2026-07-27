@@ -263,6 +263,18 @@ Delivery is delete-on-read, so the table drains itself in seconds. A
 safety-net job also deletes orphaned rows (recipient closed the browser before
 their next poll/tick) older than 60 minutes — see section 5.
 
+### 4.5 Removed from the PR - cross-framework navigation scaffolding
+
+Commit `bc492d21` originally included cross-framework navigation helpers
+(AngularJS `cross-framework-navigation.service.js`, an ng15
+`cross-framework-navigation.service.ts`, and two empty Java placeholders
+`CrossFrameworkNavigationController/Service`). They were **removed in commit
+`8d5eee87`** because none were functional yet: no page loaded the JS, the .ts
+had no Angular build in this repo to compile it, and the Java files were
+empty. The navigation actually used by the hybrid flows comes from the
+pre-existing `release/pochybrid` work (login/dashboard handoff). The helpers
+will be reintroduced with the Phase 2 navigation work where they can run.
+
 ---
 
 ## 5. Background jobs (backend only - the single janitor)
