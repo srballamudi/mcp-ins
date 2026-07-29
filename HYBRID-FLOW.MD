@@ -125,6 +125,7 @@ app must get a toast. Pattern: transactional outbox with delete-on-read.
 | 6 | monolith `CaseServiceImpl.java : 10973-10974 + 10988-10989` | The monolith producer, same recipe: list active viewers (10973), then per cross-app viewer insert the outbox row (10988) + the same audit log (10989). Store: `collaboration/store/DbCaseUpdateNotificationStore.java : 41`, source_app=MONOLITH. |
 
 ### 4b. Consumer - monolith user receives (backend saved)
+Delivery to a monolith viewer (scenario: an ng15 user saved the case)---
 
 | # | File : line | Purpose - what to say here |
 |---|---|---|
@@ -136,6 +137,7 @@ app must get a toast. Pattern: transactional outbox with delete-on-read.
 | 12 | monolith `CaseController.java : 2853` | Log marker `Cross-app case update notifications merged` - your proof in the logs that backend->monolith rows were picked up. |
 
 ### 4c. Consumer - backend user receives (monolith saved)
+Delivery to a backend/ng15 viewer (scenario: a monolith user saved the case)-----
 
 The interesting side: ng15 holds ONE long-lived SSE stream per open case, so
 draining must happen DURING the stream's life, not just at connect. All in
@@ -195,6 +197,15 @@ Each job has its own try/catch - one failing sweep never stops the others.
    ```
    Log markers: `CROSS_APP_NOTIFICATION queued` / `...merged` (monolith),
    `cross-app-queued` / `cross-app-heartbeat-delivered` (backend).
+
+
+**One-sentence summary for the walkthrough: "The row sits in the outbox only until User A's browser next touches the notification endpoint —
+the server hands over ALL pending rows and deletes them in the same call, 
+the browser's event listener turns them into a toast, and the table is empty again.**"
+
+Timing
+The latency for this direction = the gap until User A's next connect/poll cycle — a few seconds, 
+similar to the backend's 3s tick in the reverse direction.
 
 > Line numbers drift after rebases/merges - if a jump lands slightly off,
 > search the symbol name from the Purpose column; names are stable.
