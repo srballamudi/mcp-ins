@@ -273,4 +273,77 @@ Log markers: monolith `CROSS_APP_NOTIFICATION queued` /
 `Cross-app case update notifications merged`; backend `cross-app-queued`,
 `cross-app-drained`, `cross-app-stream-delivered`, `cross-app-heartbeat-delivered`.
 (Monolith `gov.doh` logger must be at `info` to see them.)
+===============
+**Summary of CollaborationCleanupService**
+This service runs three scheduled cleanup tasks to keep collaboration data tidy:
+• Expired lock cleanup (every 5 minutes)
+Removes lock records whose expires_at time has passed.
+• Stale viewer cleanup (every 10 minutes)
+Deletes viewer entries that haven't sent a heartbeat within the configured timeout.
+• Orphaned notification cleanup (every 15 minutes)
+Deletes case‑update notification rows older than the TTL (default 60 minutes); normally these are removed on read, so this acts as a safety net.
+Each job logs the number of rows deleted and handles exceptions gracefully.
+
+------------
+**What “Backend SSE tick — drain decoupled from ping” means**
+Your server uses Server-Sent Events (SSE) to push case‑update notifications to clients.
+Each connected client has its own scheduled background task running every few seconds.
+That task performs two independent actions:
+
+1. **DRAIN — fetch and send real messages**
+   Runs every tick (every 3 seconds):
+   • The backend fetches up to 20 pending notifications for that user
+   • Each message is deleted from the DB as soon as it's fetched
+   • Each is sent to the browser as a "caseUpdateNotification" event
+   • If the DB temporarily fails, the try/catch prevents the SSE stream from dying
+   → next tick will retry normally
+   This ensures notification delivery is robust and doesn’t break the connection.
+
+
+2. **PING — keep the connection alive**
+   Runs only every 5th tick (so about every 15 seconds):
+   • Sends a lightweight "heartbeat" ping message
+   • This keeps proxies/load balancers from closing idle SSE connections
+   • If sending the ping fails, the server assumes the connection is dead
+   → cleanup the emitter + stop the background task
+   This prevents zombie tasks and stale SSE sessions.
+
+**In simple terms**
+Every connected client gets a repeating background worker that:
+
+Drains real messages (every 3 seconds)
+Sends a keep‑alive ping (every 15 seconds)
+Stops itself if the connection breaks
+
+Drain and ping are decoupled so:
+• Message flow stays fast and responsive
+• Heartbeats stay predictable (15s cadence)
+=============
+
+/**
+* SSE delivery loop for a connected user.
+*
+* Runs every CASE_NOTIFICATION_TICK_INTERVAL_MS (default: 3s).
+* Each user/connection gets its own ScheduledExecutorService task.
+*
+* Tick workflow:
+*
+* 1. **DRAIN (every tick)**
+*    - Fetch up to 20 pending notifications for the user.
+*    - Each notification is delete-on-read.
+*    - Push each one as a "caseUpdateNotification" SSE event.
+*    - Wrapped in try/catch so DB hiccups do NOT kill the SSE stream;
+*      failures simply get retried on the next tick.
+*
+* 2. **PING (every 5th tick)**
+*    - Send a lightweight "heartbeat" SSE event.
+*    - Maintains a ~15s keep-alive cadence for proxies/load balancers.
+*    - If ping send fails, assume the SSE connection is dead:
+*        → clean up emitter
+*        → cancel this scheduled task
+*
+* **Drain and ping are intentionally decoupled:**
+* - Drain stays fast/responsive (3s cadence)
+* - Ping maintains stable keep-alive (15s cadence)
+    */
 
