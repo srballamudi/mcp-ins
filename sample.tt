@@ -1,0 +1,121 @@
+Go over this document and going forward follow this approach to pass parameters from Angular. It might need some backend changes if we follow this approach but it’s the standard way, let’s follow this unless it needs lot of fixes on the server side.
+
+If any questions, please get back to me.
+
+You can refer to this API /saveSignsSymptomsAttr.
+@PostMapping(value = "/saveSignsSymptomsAttr1233")
+	@ResponseBody
+	public List<CdrCaseIdentifier> saveSignsSymptomsAttr(@RequestBody SaveSignsSymptomsAttrRequest request)
+			throws Exception {
+		Long caseId = request.getCaseId();
+		Long diseaseId = request.getDiseaseId();
+		String fromWhere = request.getFromWhere();
+		List<CdrCaseIdentifier> cdrCaseIdentifierList = request.getSignSympObj();
+
+		log.info("Inside saveSignsSymptomsAttr");
+		CustomUserDetails customUserDetails = commonService.getCustomerDetails();
+		String userId = customUserDetails != null ? customUserDetails.getUserId() : "UNKNOWN";
+		int requestCount = SAVE_SIGNS_SYMPTOMS_ATTR_REQUEST_COUNTER.incrementAndGet();
+		String threadName = Thread.currentThread().getName();
+		log.warn(
+				"SAVE_SIGNS_SYMPTOMS_ATTR API CALLED - Count: {} | Thread: {} | Time: {} | userId: {} | caseId: {} | fromWhere: {} | diseaseId: {}",
+				requestCount, threadName, System.currentTimeMillis(), userId, caseId, fromWhere, diseaseId);
+		log.warn("saveSignsSymptomsAttr controller stack trace", new Exception("SAVE_SIGNS_SYMPTOMS_ATTR_CONTROLLER_TRACE"));
+		boolean userAccess = caseService.checkAllUserAccessForCase(caseId);
+		if (userAccess) {
+			caseService.saveSignsSymptomsAttr(caseId, cdrCaseIdentifierList, fromWhere, diseaseId);
+
+			// Get updated sign n symptom or risk factor information for case view.
+			List<CdrCaseIdentifier> signSym = caseService.signsSymptomsAttrList(fromWhere, diseaseId, caseId);
+
+			// Resolve the correct viewer notification section label based on which tab
+			// triggered the save (Signs/Symptoms or Risk Factors). Using a shared helper
+			// so both save and delete endpoints stay in sync.
+			String sectionName = resolveSignsSymptomsSectionName(fromWhere);
+			CopyOnWriteArrayList<String> viewers = caseService.getCaseViewers(caseId);
+			caseService.sendCaseUpdateNotification(caseId, viewers, sectionName);
+			return signSym;
+		} else { // return access denied
+			throw new AccessDeniedException(Constants.ACCESS_DENIED_MESSAGE + Constants.SIGNS_SYMPTOMS_INFORMATION);
+		}
+
+	}
+=========
+Here is the best practice JSON POST approach that avoids malformed query strings, prevents Tomcat re-dispatch, and ensures only one clean request reaches your Spring Boot controller.
+This is the approach used in production everywhere for reliability, correctness, and proper handling of large JSON objects.
+________________________________________
+✔ Your Current (Problematic) Implementation
+saveSignsSymptomsAttr(caseId, diseaseId, signSympObj, fromWhere) {
+  this.url = caseManagement/saveSignsSymptomsAttr;
+  const bodyParams = new HttpParams()
+    .set('caseId', String(caseId))
+    .set('diseaseId', String(diseaseId))
+    .set('signSympObj', JSON.stringify(signSympObj))
+    .set('fromWhere', fromWhere);
+
+  return this.http.post(this.apiUrl, bodyParams);
+}
+Why this causes trouble:
+•	Large/complex data is forced into query-encoded form, not JSON.
+•	JSON.stringify inside HttpParams → creates malformed %22, %0A, %3D sequences.
+•	Tomcat tries to re-parse & re-dispatch → duplicate controller hits → duplicate DB saves.
+•	Angular sends application/x-www-form-urlencoded instead of JSON.
+•	Spring Boot needs to manually parse the params.
+•	Harder to validate.
+This is exactly the pattern that creates TRACE attempts and duplicate POSTs in Tomcat.
+________________________________________
+✔ Correct Best Practice Conversion (JSON Body + @RequestBody)
+✔ Angular — Use a JSON object in the POST body
+saveSignsSymptomsAttr(caseId: number, diseaseId: number, signSympObj: any, fromWhere: string) {
+  const url = ${this.apiUrl}/caseManagement/saveSignsSymptomsAttr;
+
+  const payload = {
+    caseId,
+    diseaseId,
+    signSympObj,
+    fromWhere
+  };
+
+  return this.http.post(url, payload, {
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+Why this is the best:
+•	Angular sends clean JSON.
+•	No encoding errors or malformed query strings.
+•	Tomcat receives one clean POST request.
+•	Large objects (megabytes) are handled safely.
+•	Spring Boot automatically converts JSON → Java DTO.
+•	Perfect for nested, complex structures.
+________________________________________
+
+✔ Spring Boot — Receive JSON using @RequestBody
+Create a DTO:
+public class SaveSignsSymptomsAttrRequest {
+    private Long caseId;
+    private Long diseaseId;
+    private Object signSympObj;   // or a proper class/POJO
+    private String fromWhere;
+
+    // getters and setters
+}
+Controller:
+@PostMapping("/caseManagement/saveSignsSymptomsAttr")
+public ResponseEntity<?> save(@RequestBody SaveSignsSymptomsAttrRequest req) {
+    return ResponseEntity.ok(service.saveSignsSymptomsAttr(
+        req.getCaseId(),
+        req.getDiseaseId(),
+        req.getSignSympObj(),
+        req.getFromWhere()
+    ));
+}
+Why this works perfectly:
+•	Spring Boot handles JSON deserialization automatically.
+•	No parsing of query params required.
+•	No encoding problems.
+•	No duplicate requests caused by malformed URI/query strings.
+•	Supports large JSON objects from Angular without risk.
+________________________________________
+✔ Best practices for large JSON objects
+Angular:
+•	No special settings automatically required.
