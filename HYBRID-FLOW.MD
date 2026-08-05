@@ -97,6 +97,7 @@ This helper converts request parameters into numeric IDs.
 Its behavior is intentional:
 
 Numeric IDs → DB collaboration lock flow
+
 Non‑numeric IDs → legacy in‑memory arbitrator
 
 Some callers legitimately send non‑numeric section IDs (modals, older screens), so this is routing logic, not validation.
