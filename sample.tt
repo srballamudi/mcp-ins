@@ -120,11 +120,8 @@ ________________________________________
 Angular:
 •	No special settings automatically required.
 
------
-If you want, this is a polished version you can send:I reviewed the document, and the overall architectural direction looks good.
-I agree with using @RequestBody with a JSON payload from Angular, since that is the standard approach and is better suited for nested structures like signSympObj.
-The only comments I would raise are:1.We should keep the request DTO strongly typed where possible,
-for example List<CdrCaseIdentifier> instead of Object.
-2.The statement that malformed query strings cause duplicate controller invocations should probably be softened or removed unless we have clear evidence that this was the root cause.
+-----================
+Hi [Name],I went through the document, and overall I agree with the direction. Using a JSON payload from Angular and handling it with @RequestBody on the backend looks like the right and standard approach, especially for nested data like signSympObj.I just had a few minor comments:•If possible, it would be better to keep the request DTO strongly typed, for example using List<CdrCaseIdentifier> instead of Object.•The part about malformed query strings causing duplicate controller calls may be worth softening a bit unless we already confirmed that as the actual root cause.•We may also not need to explicitly set Content-Type: application/json in Angular when posting a plain object, since Angular usually handles that automatically.•For very large payloads, it may also be worth mentioning that backend or proxy size limits can still apply.Other than that, the overall approach looks good to me and seems aligned with Angular and Spring Boot best practices.
+
 3.We may not need to explicitly set Content-Type: application/json in Angular when posting a plain object, since Angular already does that by default.
 4.For very large payloads, it may also be worth noting that backend or proxy request size limits can still apply.Other than those points, the overall design looks aligned with Angular and Spring Boot best practices.
