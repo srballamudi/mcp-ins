@@ -103,15 +103,55 @@ Both apps follow the same internal structure:
 
 ### Lock Release
 
-| Step | File : Line | What It Does |
-|------|------------|-------------|
-| 6 | Backend `CaseController.java : 1977` | `releaseLock(...)` entry point. (Monolith: 1752). Routes to DB or legacy release logic. |
-| 7 | Backend `CaseController.java : 1991-2006` | Ownership check: `sameUser && sameSession && sameTab` — only exact owner can release. Line 1994 uses `isOwnerTab()` helper (line 4479); uses X-Tab-Id header in Phase 2. |
-| 8 | Backend `DbLockStore.java : 152` | `release(lockToken, sessionId)` — DELETE keyed by lock token. Stale/racing callers cannot delete a newer lock. |
-| 9 | Backend `CaseController.java : 2023` | `releaseUsersLock` (`/releaseAllLocks` logout path) → `DbLockStore.releaseAllByUser : 165`. Also runs legacy cleanup for compatibility. |
-| 10 | Monolith `DbLockStore.java : 77, 94, 101` | Monolith store: INSERT (77), release by case+section (94), release all by user on logout (101). |
+Lock Release – Plain Text Table (Copy‑Friendly)
+Step 6
+File: Backend CaseController.java : ~1977
+Purpose: releaseLock(...) entry point.
+Details: Mirrors monolith (CaseController.java : 1752). Begins hybrid routing into DB or legacy flow.
 
-**💡 Key Takeaway:** The row IS the lock. Atomic insert = acquire. TTL = crash-safety. Token-keyed delete = safe release. Wire contract unchanged—both UIs work as-is.
+Step 7
+File: Backend CaseController.java : 1991–2006
+Purpose: Ownership validation before releasing.
+Details: The caller must match all three:
+
+same user ID
+same collaboration session ID
+same tab ID (isOwnerTab())
+Phase 1: Tab check becomes a no‑op because both sides resolve to "sess:<sessionId>".
+Phase 2: Real X-Tab-Id header activates strict per‑tab release rules.
+
+
+Step 8
+File: Backend DbLockStore.java : ~152
+Purpose: release(lockToken, sessionId) — DELETE by lock token.
+Details: This deletes the lock only when the token and collaboration session match.
+Prevents stale or racing callers from deleting a newer lock.
+DB remains the authority.
+
+Step 9
+File: Backend CaseController.java : ~2023
+Purpose: releaseUsersLock (logout path: /releaseAllLocks).
+Details: Calls DbLockStore.releaseAllByUser : 165 to clean all locks for a user session.
+Legacy cleanup also runs for backwards compatibility.
+
+Step 10
+File: Monolith DbLockStore.java : 77, 94, 101
+Purpose: Legacy lock operations for cross-app interoperability.
+Details:
+
+Line 77 → INSERT
+Line 94 → release by case+section
+Line 101 → release all by user on logout
+Mirrors the collaboration backend behavior.
+
+
+Key Takeaway (Clear Summary)
+The DB row is the lock.
+
+Atomic INSERT = acquire
+TTL = crash‑safety
+Token‑keyed DELETE = safe release
+Hybrid routing ensures monolith + collaboration service do not diverge (“split‑brain”), and the UI contract remains unchanged.
 
 ---
 
