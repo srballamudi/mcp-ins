@@ -1,245 +1,263 @@
-# CDRSS Hybrid Collaboration - Code Walkthrough Script
+# CDRSS Hybrid Collaboration - Code Walkthrough Guide
 
-A presenter's script for walking the team through the hybrid collaboration code,
-end to end. Part 1 is the high-level picture (say this first, no code open).
-Parts 2-5 are ordered jump lists: open the file, go to the line (Ctrl+G in
-IntelliJ), and the "Purpose" column tells you what that method/line does and
-why it exists.
+A comprehensive guide for understanding how CDRSS implements cross-app collaboration during the migration period. This document contains a high-level overview followed by detailed code navigation guides.
 
-All line numbers verified against the PR branch heads:
-- Backend = `feature/hybrid-lock-viewer-next` (PR 10379)
-- Monolith = `feature/hybrid-lock-viewer-monolith-localtest-v2` (PR 10380)
+**Estimated walkthrough time:** 15-20 minutes  
+**PR References:**
+- Backend: `feature/hybrid-lock-viewer-next` (PR 10379)
+- Monolith: `feature/hybrid-lock-viewer-monolith-localtest-v2` (PR 10380)
 
 ---
 
-## Part 1 - High-level description (2 minutes, no code)
+## 🎯 Part 1: The Big Picture (Start Here)
 
-CDRSS runs as two applications during the migration period:
+### The Problem
 
-- **Monolith** - Spring MVC + AngularJS, WAR on Tomcat (:9090)
-- **Backend** - Spring Boot + Angular 15 (:19009)
+CDRSS runs two separate applications during migration:
+- **Monolith**: Spring MVC + AngularJS, running on Tomcat (:9090)
+- **Backend**: Spring Boot + Angular 15, running on (:19009)
 
-Users on BOTH apps can open the same case at the same time. Before this work,
-each app tracked "who is viewing" and "who is editing" only in its own JVM
-memory - so a monolith user and an ng15 user could edit the same section
-simultaneously and silently overwrite each other.
+Users can open the **same case simultaneously in both apps**. Before this work:
+- Each app only tracked "who is viewing" and "who is editing" in its own JVM memory
+- A monolith user and backend user could edit the same section simultaneously
+- **Result**: Silent data overwrites ❌
 
-**The hybrid model fixes that using the shared Oracle schema as the only
-integration point.** No REST calls between apps, no message broker. Three
-shared tables:
+### The Solution: Shared Oracle Database
 
-| Table | Feature |
-|---|---|
-| `CASE_SECTION_LOCK` | cross-app section edit locks (TTL 300s) |
-| `CASE_VIEWER_PRESENCE` | who has which case open (heartbeat rows) |
-| `CASE_UPDATE_NOTIFICATION` | outbox for cross-app "case updated" toasts |
+We use a **shared Oracle schema as the single source of truth**. No REST calls between apps, no message brokers—just three shared tables:
 
-Everything is behind a feature flag (monolith `cdrss.collaboration.mode=db`,
-backend `collaboration.store.mode=DB`). Flag off = each app falls back to its
-old in-memory behavior. Rollback is a config flip, no code change.
+| Table | Purpose |
+|-------|---------|
+| `CASE_SECTION_LOCK` | Cross-app section edit locks (300-second TTL) |
+| `CASE_VIEWER_PRESENCE` | Real-time "who has this case open" tracking |
+| `CASE_UPDATE_NOTIFICATION` | Outbox for cross-app "case updated" notifications |
 
-Both apps have the same internal shape: a **store router** (single decision
-point: DB mode or legacy?), a **principal resolver** (who is calling: user +
-session + tab), **services** (lock/viewer business rules), and **DB stores**
-(the SQL). The walkthrough below follows a user's actual journey: open a case
--> presence; edit a section -> lock; save -> notification; background cleanup.
+### Feature Flag & Rollback
 
----
+**Everything is behind a feature flag:**
+- Monolith: `cdrss.collaboration.mode=db`
+- Backend: `collaboration.store.mode=DB`
 
-## Part 2 - Flow 1: Viewer presence ("who else has this case open")
+**Rollback is instant**: Flip the config flag → both apps revert to legacy in-memory behavior. **No code redeploy needed.** ✅
 
-The journey starts when a user opens a case.
+### Architecture Pattern
 
-### Backend (user opens a case in ng15)
-
-| # | File : line | Purpose - what to say here |
-|---|---|---|
-| 1 | `caseManagement/controller/CaseController.java : 439` | `getCaseInfo(...)` - the endpoint hit when a case is opened. Note the added `HttpServletRequest request` parameter - needed so we can resolve session/tab identity (Principal alone only gives the username). |
-| 2 | same file : 443-446 | The router check `collaborationStoreRouter.useDbStore()` - THE pattern of this whole PR: every hybrid path starts with this if. True -> resolve the CollaborationPrincipal and `viewerService.join(...)` writes a presence row. |
-| 3 | same file : 447-451 | The else branch - legacy in-memory viewer tracking, byte-for-byte the old behavior. Flag off = this code path, nothing else. |
-| 4 | `collaboration/service/CollaborationPrincipalResolver.java : 72` | `resolve(request)` - builds the 3-part identity (user, collaboration session id, tab id). Line 70: the `X-Tab-Id` header constant. Lines 89-93: Phase 1 fallback - no header yet, so tab id = `"sess:<sessionId>"`. |
-| 5 | `collaboration/service/ViewerServiceImpl.java : 38` | `join(...)` - business rule: joining is idempotent per (case, session, tab). Also see `heartbeat` (59), `leave` (79), `getActiveViewers` (84). |
-| 6 | `collaboration/dao/DbViewerStore.java : 51` | The `MERGE INTO case_viewer_presence` upsert - comment on line 50 says it: "Oracle MERGE provides idempotent join semantics". Reopening/refreshing never creates duplicate rows. |
-| 7 | same file : 39-48 | `SELECT_ACTIVE_BY_CASE` - the "who is viewing" query. Point out the staleness filter in the WHERE clause: rows with old heartbeats are ignored AT READ TIME - correctness never waits for a cleanup job. |
-
-### Monolith (user opens a case in AngularJS)
-
-| # | File : line | Purpose - what to say here |
-|---|---|---|
-| 8 | `caseManagement/controller/CaseController.java : 420-423` | Same pattern, monolith side: opening a case calls `viewerService.join(caseId, collabPrincipal)`. The comment at 420 states the contract: presence is what lets cross-app saves find this user later. |
-| 9 | same file : 2833 | `viewerService.heartbeat(caseId, collabPrincipal)` - refreshed while the case stays open (rides the notification endpoint request - the monolith is fully request-driven, no timers). |
-| 10 | same file : 2801 | `viewerService.leave(caseId, collabPrincipal)` - explicit removal when the user closes the case. |
-| 11 | `caseManagement/collaboration/service/ViewerServiceImpl.java : 40 / 62 / 78 / 91` | The four operations: `join`, `leave`, `heartbeat`, `listActiveViewerUserIds`. Mirrors the backend service - same shape, monolith package. |
-| 12 | `caseManagement/collaboration/store/DbViewerStore.java : 51` | `upsert(...)` - monolith uses try-UPDATE-then-INSERT (63) instead of MERGE; same idempotent result. `heartbeatBySession` (75), `delete` (93), `listActiveViewerUserIds` (100). |
-
-**Wrap-up line for this flow:** both apps write heartbeat rows to the same
-table and filter stale rows in the query - so each app "sees" the other's
-viewers with zero direct communication.
+Both apps follow the same internal structure:
+1. **Store Router** – Single decision point: Use DB mode or fall back to legacy?
+2. **Principal Resolver** – Identify the caller: (User + Session + Tab)
+3. **Services** – Business logic for locks, viewers, notifications
+4. **DB Stores** – SQL layer for the three collaboration tables
 
 ---
 
-## Part 3 - Flow 2: Section locks ("one editor per section")
+## 📍 Part 2: Flow 1 - Viewer Presence
 
-The journey continues: the user clicks into an editable section.
+**What happens:** User opens a case → system records "who is viewing"
 
-### Acquire (backend example; monolith is the same pattern)
+**Key Concept:** Both apps write heartbeat rows to the same table. Each app reads from this table to see who else is viewing. Zero direct communication needed.
 
-| # | File : line | Purpose - what to say here |
-|---|---|---|
-| 1 | backend `CaseController.java : 1901` | This is the main entry point for lock acquisition.
-1. CaseController.java (line ~1901) – acquireLock(...) entry point
-This is the main entry point for lock acquisition.
-Step 1
-File: CaseController.java (around line 1901)
-Purpose: acquireLock(...) entry point
-Details: Mirrors monolith (CaseController.java around 1691). Routes the request into either the DB-backed lock flow or legacy in-memory arbitrator.
-Step 2
-File: CaseController.java (around line 4452)
-Purpose: parseLongOrNull(...) helper
-Details: Numeric IDs → DB collaboration lock flow.
-Non‑numeric IDs → legacy in-memory fallback.
-This is intentional routing, not validation.
-Same logic used in the monolith (around line 1814).
-Step 3
-File: DbLockStore.java (around line 107)
-Purpose: acquire(lockRecord) – atomic DB lock claim
-Details: Inserts a row into case_section_lock with lock_token, user, session, tab, and expiry.
-If a live lock exists → CONFLICT (return owner).
-If expired → treated as free.
-TTL ≈ 300 seconds.
-Step 4
-File: DbLockStore.java (lines 43, 65–66)
-Purpose: fencing_token sequence logic
-Details: Oracle sequence assigned at insert; incremented via NEXTVAL on renew.
-Provides monotonic fencing token for concurrency correctness in later phases.
-DDL default allows monolith to insert rows without needing fencing_token logic.
-Step 5
-File: CaseController acquire flow
-Purpose: Build legacy-compatible response
-Details: Response format unchanged:
-"isLocked" = "true" → caller acquired the lock
-"isLocked" = "false" + "lockedBy" → conflict
-On DB errors → do NOT fall back to legacy (avoids split-brain lock state).
+### Backend (ng15 app)
 
+| Step | File : Line | What It Does |
+|------|------------|-------------|
+| 1 | `caseManagement/controller/CaseController.java : 439` | `getCaseInfo(...)` endpoint called when case opens. Note the new `HttpServletRequest request` parameter—this is how we identify the caller. |
+| 2 | Same file : 443-446 | **Router check:** `collaborationStoreRouter.useDbStore()` — THE key pattern in this entire PR. If true → use DB collaboration. |
+| 3 | Same file : 447-451 | Legacy fallback (if DB mode is OFF) — unchanged in-memory viewer tracking. Flag off = only this code runs. |
+| 4 | `collaboration/service/CollaborationPrincipalResolver.java : 72` | `resolve(request)` builds the 3-part identity: (user ID, session ID, tab ID). Line 70 shows the `X-Tab-Id` header constant. |
+| 5 | `collaboration/service/ViewerServiceImpl.java : 38` | `join(...)` makes joining idempotent per (case, session, tab). Also see: `heartbeat()` (line 59), `leave()` (line 79), `getActiveViewers()` (line 84). |
+| 6 | `collaboration/dao/DbViewerStore.java : 51` | `MERGE INTO case_viewer_presence` — Oracle MERGE provides idempotent semantics. Reopening a case or refreshing doesn't create duplicates. |
+| 7 | Same file : 39-48 | `SELECT_ACTIVE_BY_CASE` query — Notice the staleness filter in WHERE: rows with old heartbeats are **ignored at read time**. Correctness never depends on cleanup. |
 
-⭐ Summary (One‑sentence purpose)
-This block implements the hybrid lock acquisition system, safely routing between the new DB-backed collaboration lock model and the legacy in-memory arbitrator, while maintaining identical API responses and avoiding split-brain locking during migration.
+### Monolith (AngularJS app)
 
-### Release
+| Step | File : Line | What It Does |
+|------|------------|-------------|
+| 8 | `caseManagement/controller/CaseController.java : 420-423` | Same pattern: opening a case calls `viewerService.join(caseId, collabPrincipal)`. Line 420 comment states the contract. |
+| 9 | Same file : 2833 | `viewerService.heartbeat(caseId, collabPrincipal)` — sent periodically while case is open (rides the notification endpoint request). Monolith is fully request-driven; no background jobs. |
+| 10 | Same file : 2801 | `viewerService.leave(caseId, collabPrincipal)` — explicit cleanup when user closes the case. |
+| 11 | `caseManagement/collaboration/service/ViewerServiceImpl.java : 40, 62, 78, 91` | Four operations: `join`, `leave`, `heartbeat`, `listActiveViewerUserIds`. Mirrors the backend service. |
+| 12 | `caseManagement/collaboration/store/DbViewerStore.java : 51` | `upsert(...)` — monolith uses UPDATE-then-INSERT (line 63) instead of MERGE, but same idempotent result. See also: `heartbeatBySession()` (75), `deleteBySession()` (85). |
 
-| # | File : line | Purpose - what to say here |
-|---|---|---|
-| 6 | backend `CaseController.java : 1977` | `releaseLock(...)` - entry point. (Monolith mirror: `:1752`.) |
-| 7 | backend `CaseController.java : 1991-2006` | The ownership check: `sameUser && sameSession && sameTab` - only the exact owner may release. `sameTab` (1994) uses `isOwnerTab` (helper at 4479); in Phase 1 both sides resolve the tab to the same session fallback, so it cannot fail yet - it becomes real when the UIs send `X-Tab-Id` (Phase 2, ~20 lines per frontend, no server change). |
-| 8 | backend `DbLockStore.java : 152` | `release(lockToken, sessionId)` - the DELETE is keyed by lock token, so even a racing stale caller cannot delete a newer lock. |
-| 9 | backend `CaseController.java : 2023` | `releaseUsersLock` (`/releaseAllLocks`, logout path) -> `DbLockStore.releaseAllByUser : 165`. Then ALWAYS runs the legacy in-memory cleanup too - without this, a logged-out user's DB locks would block others for up to 300s. |
-| 10 | monolith `DbLockStore.java : 77 / 94 / 101` | Monolith's store: insert claim (77), release by case+section (94), release all by user on logout (101). |
-
-**Wrap-up line:** the lock row IS the lock. Atomic insert = acquire, TTL =
-crash-safety, token-keyed delete = safe release, and the wire contract is
-unchanged so both existing UIs work as-is.
+**💡 Key Takeaway:** Both apps write heartbeat rows to `CASE_VIEWER_PRESENCE` and filter stale rows on read. Each app sees the other's viewers with zero direct communication.
 
 ---
 
-## Part 4 - Flow 3: Case update notifications ("someone changed the case you're viewing")
+## 🔒 Part 3: Flow 2 - Section Locks
 
-The journey continues: the user saves a section. Every viewer from the OTHER
-app must get a toast. Pattern: transactional outbox with delete-on-read.
+**What happens:** User clicks into an editable section → system ensures only one editor per section
 
-### 4a. Producer (the app that saves)
+**Key Concept:** The database row IS the lock. Atomic insert = acquire, TTL = crash-safety, token-keyed delete = safe release.
 
-| # | File : line | Purpose - what to say here |
-|---|---|---|
-| 1 | backend `CaseServiceImpl.java : 11700-11701` | After the local (in-memory) notification fan-out, ask the presence table: `getActiveViewers(caseId)` - who ELSE is viewing (both apps, staleness-filtered). |
-| 2 | same file : 11705-11706 | Skip the editor themselves - no self-notifications. |
-| 3 | same file : 11708-11709 | Skip viewers already served by the local in-memory path, and a HashSet prevents double-queueing a recipient. |
-| 4 | same file : 11710-11712 | The outbox write: `caseUpdateNotificationStore.insert(...)` + audit log `CROSS_APP_NOTIFICATION queued` (the marker used during validation). Store SQL: `collaboration/dao/DbCaseUpdateNotificationStore.java : 41`, source_app=BACKEND. |
-| 5 | same file : 11715-11717 | The catch block - "cross-app fanout must never break the local save". DB hiccup = warning, save still succeeds. Fail-open by design. |
-| 6 | monolith `CaseServiceImpl.java : 10973-10974 + 10988-10989` | The monolith producer, same recipe: list active viewers (10973), then per cross-app viewer insert the outbox row (10988) + the same audit log (10989). Store: `collaboration/store/DbCaseUpdateNotificationStore.java : 41`, source_app=MONOLITH. |
+### Lock Acquisition
 
-### 4b. Consumer - monolith user receives (backend saved)
-Delivery to a monolith viewer (scenario: an ng15 user saved the case)---
+| Step | File : Line | What It Does |
+|------|------------|-------------|
+| 1 | Backend `CaseController.java : 1901` | `acquireLock(...)` entry point. Routes to either DB-backed or legacy in-memory. |
+| 2 | Backend `CaseController.java : 4452` | `parseLongOrNull(...)` helper — numeric IDs → DB flow; non-numeric → legacy fallback. Intentional routing. |
+| 3 | Backend `DbLockStore.java : 107` | `acquire(lockRecord)` — atomic INSERT into `case_section_lock`. If a live lock exists → CONFLICT (return who owns it). If expired → treated as free. TTL ≈ 300 seconds. |
+| 4 | Backend `DbLockStore.java : 43, 65-66` | **Fencing token logic** — Oracle sequence assigned at insert, incremented on renew. Provides monotonic token for concurrency correctness. DDL default lets monolith insert without special handling. |
+| 5 | Backend `CaseController.java` (acquire flow) | Response format unchanged: `"isLocked": true` = lock acquired; `"isLocked": false, "lockedBy": user` = conflict. On DB error → do NOT fall back (avoids split-brain state). |
 
-| # | File : line | Purpose - what to say here |
-|---|---|---|
-| 7 | monolith `ngEditCaseCtrl.js : 7298` | Frontend: the endpoint URL constant. Included because the browser side is where delivery becomes visible - reviewers always ask "how does the toast actually appear?". |
-| 8 | monolith `ngEditCaseCtrl.js : 7302` | `new EventSource(url, { withCredentials: true })` - AngularJS opens an SSE connection while the case is open; EventSource auto-reconnects, which effectively makes this a poll loop. |
-| 9 | monolith `ngEditCaseCtrl.js : 7304` | `addEventListener('caseUpdateNotification', ...)` - the handler that renders the toast. (Error/reconnect states: 7319-7327.) |
-| 10 | monolith `CaseController.java : 2824-2825` | The server endpoint behind that EventSource - returns an SseEmitter per connection. |
-| 11 | monolith `CaseController.java : 2842` | THE cross-app drain: `fetchAndDeleteMessages(principal.getName())` - fetch ALL outbox rows addressed to this user, in one call. Store SQL: `DbCaseUpdateNotificationStore.java : 55` - SELECT then DELETE by recipient = one-time delivery. |
-| 12 | monolith `CaseController.java : 2853` | Log marker `Cross-app case update notifications merged` - your proof in the logs that backend->monolith rows were picked up. |
+**Monolith side (nearly identical):** `CaseController.java : 1691` (entry), `DbLockStore.java : 77` (insert), same pattern.
 
-### 4c. Consumer - backend user receives (monolith saved)
-Delivery to a backend/ng15 viewer (scenario: a monolith user saved the case)-----
+### Lock Release
 
-The interesting side: ng15 holds ONE long-lived SSE stream per open case, so
-draining must happen DURING the stream's life, not just at connect. All in
-backend `CaseServiceImpl.java`:
+| Step | File : Line | What It Does |
+|------|------------|-------------|
+| 6 | Backend `CaseController.java : 1977` | `releaseLock(...)` entry point. (Monolith: 1752) |
+| 7 | Backend `CaseController.java : 1991-2006` | Ownership check: `sameUser && sameSession && sameTab` — only exact owner can release. Line 1994 uses `isOwnerTab()` helper (line 4479); uses X-Tab-Id header if Phase 2 is active. |
+| 8 | Backend `DbLockStore.java : 152` | `release(lockToken, sessionId)` — DELETE keyed by lock token. A stale/racing caller cannot delete a newer lock. |
+| 9 | Backend `CaseController.java : 2023` | `releaseUsersLock` (`/releaseAllLocks` logout path) → `DbLockStore.releaseAllByUser : 165`. Also runs legacy cleanup (no timeout issues without this). |
+| 10 | Monolith `DbLockStore.java : 77, 94, 101` | Monolith store: INSERT (77), release by case+section (94), release all by user on logout (101). |
 
-| # | File : line | Purpose - what to say here |
-|---|---|---|
-| 13 | : 204-211 | The cadence constants: 15s ping (204), 3s tick (210), 5 ticks/ping (211). This split is the latency fix - originally the drain rode the 15s ping (8-9s observed latency); now it runs every 3s while the ping cadence toward proxies is unchanged. |
-| 14 | : 11346 | `getCaseUpdateNotificationStream(caseId)` - the SSE endpoint. Emitter created with a timeout (11350); guards for bad caseId / missing auth (11352-11363). |
-| 15 | : 11367-11370 | Emitter registered in a per-case map keyed by userId. |
-| 16 | : 11380-11384 | Reconnect/duplicate-tab handling: the OLD stream's heartbeat is cancelled and the old emitter completed - one stream per user/case, no leaks. |
-| 17 | : 11387-11391 | Lifecycle hooks - completion/timeout/error ALL route to `removeCaseNotificationEmitter`; then the heartbeat scheduler is started. Every death path is covered before the stream goes live. |
-| 18 | : 11467 | `startCaseNotificationHeartbeat(...)` - one scheduled task per stream, ticking every 3s. |
-| 19 | : 11485 | The drain loop: `fetchAndDeleteNextMessage(userId)` repeatedly, capped at 20 rows/tick. Store SQL: `DbCaseUpdateNotificationStore.java : 64` - oldest row first (`FETCH FIRST 1 ROWS ONLY`), delete by notification_id. This line is WHY monolith->backend latency is <=3s. |
-| 20 | : 11494 | Audit log `cross-app-heartbeat-delivered` with the count - the validation marker. |
-| 21 | : 11508 | The ping gate: `tickCounter % HEARTBEAT_TICKS_PER_PING == 0` - keep-alive only every 5th tick, preserving the original 15s cadence load balancers expect. |
-| 22 | : 11513 | Ping failure -> remove emitter + `completeWithError` - a dead client tears down its own stream. Drain failures, by contrast, only log a warning (fail-open). |
-| 23 | : 11426-11445 | `removeCaseNotificationEmitter` - the single cleanup path: cancel heartbeat FIRST (11428), tolerate already-gone registry with an audit log (11429-11437), remove this EXACT emitter (11439), and only unregister the viewer if this emitter was current (11443-11445) - a replaced stream must not kick a still-active viewer. |
-| 24 | : 11266 + 11326-11331 | Also mention: the backend's legacy POLLING endpoint got the same treatment - `fetchCrossAppNotification` (11326) drains one outbox row per poll (11331), fail-open. Poll clients get cross-app messages too. |
-
-**Wrap-up line:** rows live seconds - written on save, deleted on delivery.
-The table is empty at rest; that's the health check.
+**💡 Key Takeaway:** The row IS the lock. Atomic insert = acquire. TTL = crash-safety. Token-keyed delete = safe release. Wire contract unchanged—both UIs work as-is.
 
 ---
 
-## Part 5 - Background jobs and safety nets
+## 📢 Part 4: Flow 3 - Case Update Notifications
 
-All scheduled cleanup lives in the BACKEND ONLY (single janitor = no delete
-races; the monolith stays request-driven and relies on the query-side
-staleness filters you saw in Part 2 stop 7).
+**What happens:** User saves a section → all viewers from the OTHER app get a toast
+
+**Key Concept:** Transactional outbox with delete-on-read. Rows live only until delivery—table is empty at rest.
+
+### 4a. Producer: Save & Enqueue Notifications
+
+| Step | File : Line | What It Does |
+|------|------------|-------------|
+| 1 | Backend `CaseServiceImpl.java : 11700-11701` | After local in-memory notifications fan out, query presence: `getActiveViewers(caseId)` — who ELSE is viewing? (Both apps, staleness-filtered.) |
+| 2 | Same file : 11705-11706 | Skip the editor themselves — no self-notifications. |
+| 3 | Same file : 11708-11709 | Skip viewers served by local in-memory path. HashSet prevents double-queueing. |
+| 4 | Same file : 11710-11712 | **Outbox write:** `caseUpdateNotificationStore.insert(...)` + audit log `CROSS_APP_NOTIFICATION queued` (validation marker). Store SQL in: `collaboration/dao/DbCaseUpdateNotificationStore.java`. |
+| 5 | Same file : 11715-11717 | Catch block — "cross-app fanout must never break the local save." DB error = warning log, save succeeds anyway. **Fail-open by design.** |
+| 6 | Monolith `CaseServiceImpl.java : 10973-10974, 10988-10989` | Monolith producer: same recipe. List active viewers (10973), then per cross-app viewer insert outbox row (10988) + same audit log. |
+
+### 4b. Consumer: Monolith User Receives (Backend Saved)
+
+**Scenario:** An ng15 user saved a case → monolith user should see a toast.
+
+| Step | File : Line | What It Does |
+|------|------------|-------------|
+| 7 | Monolith `ngEditCaseCtrl.js : 7298` | Frontend URL constant. Included because browser side makes delivery visible—reviewers always ask "how does the toast actually appear?" |
+| 8 | Same file : 7302 | `new EventSource(url, { withCredentials: true })` — AngularJS opens SSE connection while case is open. EventSource auto-reconnects = effective long-polling. |
+| 9 | Same file : 7304 | `addEventListener('caseUpdateNotification', ...)` — handler that renders the toast. Error/reconnect states at 7319-7327. |
+| 10 | Monolith `CaseController.java : 2824-2825` | Server endpoint backing that EventSource — returns SseEmitter per connection. |
+| 11 | Monolith `CaseController.java : 2842` | **THE cross-app drain:** `fetchAndDeleteMessages(principal.getName())` — fetch ALL outbox rows for this user, delete them in one call. Store SQL in: `DbCaseUpdateNotificationStore.java`. |
+| 12 | Monolith `CaseController.java : 2853` | Log marker: `Cross-app case update notifications merged` — proof in logs that backend→monolith rows were picked up. |
+
+### 4c. Consumer: Backend User Receives (Monolith Saved)
+
+**Scenario:** A monolith user saved a case → ng15 user should see a toast.
+
+**Key Difference:** Backend SSE stream is long-lived, so draining must happen **during stream life**, not just at connect.
+
+| Step | File : Line | What It Does |
+|------|------------|-------------|
+| 13 | Backend `CaseServiceImpl.java : 204-211` | **Cadence constants:** 15s ping (204), 3s tick (210), 5 ticks/ping (211). This split is the latency fix—originally drain rode the 15s ping (8-9s latency observed); now runs every 3s. |
+| 14 | Same file : 11346 | `getCaseUpdateNotificationStream(caseId)` — SSE endpoint. Emitter created with timeout (11350); guards for bad caseId / missing auth (11352-11363). |
+| 15 | Same file : 11367-11370 | Emitter registered in per-case map keyed by userId. |
+| 16 | Same file : 11380-11384 | Reconnect/duplicate-tab: OLD stream's heartbeat cancelled, old emitter completed. One stream per user/case, no leaks. |
+| 17 | Same file : 11387-11391 | Lifecycle hooks — completion, timeout, error ALL route to `removeCaseNotificationEmitter`. Heartbeat scheduler started. Every death path covered before stream goes live. |
+| 18 | Same file : 11467 | `startCaseNotificationHeartbeat(...)` — one scheduled task per stream, ticking every 3s. |
+| 19 | Same file : 11485 | **The drain loop:** `fetchAndDeleteNextMessage(userId)` repeatedly, capped at 20 rows/tick. Store SQL: `DbCaseUpdateNotificationStore.java : 64` — oldest row first (`FETCH FIRST 1 ROWS ONLY`). |
+| 20 | Same file : 11494 | Audit log: `cross-app-heartbeat-delivered` with count — validation marker. |
+| 21 | Same file : 11508 | **Ping gate:** `tickCounter % HEARTBEAT_TICKS_PER_PING == 0` — keep-alive only every 5th tick. Preserves original 15s cadence load balancers expect. |
+| 22 | Same file : 11513 | Ping failure → remove emitter, complete with error. Dead client tears down its own stream. Drain failures = warning log (fail-open). |
+| 23 | Same file : 11426-11445 | `removeCaseNotificationEmitter` — single cleanup path: cancel heartbeat FIRST (11428), tolerate already-gone registry (11429-11437), remove this exact emitter (11438-11444). |
+| 24 | Same file : 11266, 11326-11331 | Also: backend's legacy POLLING endpoint got same treatment. `fetchCrossAppNotification()` (11326) drains one row per poll (11331), fail-open. Polling keeps working unchanged. |
+
+**💡 Key Takeaway:** Rows live only seconds—written on save, deleted on delivery. Table is empty at rest; that's the health check.
+
+**Latency:** Gap between events = delay until recipient's next connect/poll cycle (typically 2-3 seconds).
+
+---
+
+## 🧹 Part 5: Background Jobs & Safety Nets
+
+**Single Source of Cleanup:** Backend only (single janitor = no delete races). Monolith stays request-driven and relies on query-side staleness filters.
 
 Backend `collaboration/service/CollaborationCleanupService.java`:
 
-| # | Line | Purpose - what to say here |
-|---|---|---|
-| 1 | 24 | `@ConditionalOnProperty(collaboration.cleanup.enabled)` - master kill switch; default true. Off = the bean is never created. |
-| 2 | 58-59 | `cleanupExpiredLocks()` - every 5 min, delete lock rows past expiry. Queries already ignore expired rows, so this only keeps the table small. |
-| 3 | 77-78 | `cleanupStaleViewers()` - every 10 min, delete presence rows with heartbeats older than the timeout. |
-| 4 | 97-98 | `cleanupOrphanedNotifications()` - every 15 min, delete outbox rows older than 60 min (recipient closed the browser before their next tick). Sweep SQL: `DbCaseUpdateNotificationStore.java : 90`. 60 min vs <=3s normal delivery = a 1200x margin; the sweep can never race a live drain. |
+| Step | Line | What It Does |
+|------|------|-------------|
+| 1 | 24 | `@ConditionalOnProperty(collaboration.cleanup.enabled)` — master kill switch (default: ON). OFF = bean never created. |
+| 2 | 58-59 | `cleanupExpiredLocks()` — every 5 minutes, DELETE lock rows past expiry. Queries already ignore expired rows, so cleanup only keeps table small. |
+| 3 | 77-78 | `cleanupStaleViewers()` — every 10 minutes, DELETE presence rows with heartbeats older than timeout. |
+| 4 | 97-98 | `cleanupOrphanedNotifications()` — every 15 minutes, DELETE outbox rows older than 60 minutes (recipient closed browser before next tick). Sweep SQL in: `DbCaseUpdateNotificationStore.java`. |
 
-Each job has its own try/catch - one failing sweep never stops the others.
+**Error Handling:** Each job has its own try/catch—one failing sweep never stops the others.
 
 ---
 
-## Part 6 - Closing points (1 minute)
+## ✅ Part 6: Validation & Monitoring
 
-1. **Rollback**: flip `cdrss.collaboration.mode` / `collaboration.store.mode` -
-   both apps instantly revert to legacy in-memory behavior. No redeploy.
-2. **Phase 2** (deferred, small): frontends send `X-Tab-Id` (~20 lines each
-   app) -> the tab checks you saw in Part 3 stop 7 become real; and fencing
-   token enforcement at save time.
-3. **Validation** (live demo if time allows):
-   ```sql
-   SELECT case_id, user_id, source_app, last_heartbeat FROM case_viewer_presence;
-   SELECT case_id, section_id, user_id, expiry_time    FROM case_section_lock;
-   SELECT recipient_user_id, source_app, created_date  FROM case_update_notification; -- drains to empty in ~3s
-   ```
-   Log markers: `CROSS_APP_NOTIFICATION queued` / `...merged` (monolith),
-   `cross-app-queued` / `cross-app-heartbeat-delivered` (backend).
+### Quick SQL Checks
 
+Run these queries to validate the system is working:
 
-**One-sentence summary for the walkthrough: "The row sits in the outbox only until User A's browser next touches the notification endpoint —
-the server hands over ALL pending rows and deletes them in the same call, 
-the browser's event listener turns them into a toast, and the table is empty again.**"
+```sql
+-- Who is viewing right now?
+SELECT case_id, user_id, source_app, last_heartbeat 
+FROM case_viewer_presence;
 
-Timing
-The latency for this direction = the gap until User A's next connect/poll cycle — a few seconds, 
-similar to the backend's 3s tick in the reverse direction.
+-- Current locks
+SELECT case_id, section_id, user_id, expiry_time 
+FROM case_section_lock;
 
-> Line numbers drift after rebases/merges - if a jump lands slightly off,
-> search the symbol name from the Purpose column; names are stable.
+-- Pending notifications (should drain to empty in ~3 seconds)
+SELECT recipient_user_id, source_app, created_date 
+FROM case_update_notification;
+```
 
+### Log Markers
+
+Watch for these in application logs:
+
+| Marker | App | Meaning |
+|--------|-----|---------|
+| `CROSS_APP_NOTIFICATION queued` | Monolith | Outbox row created |
+| `Cross-app case update notifications merged` | Monolith | Rows delivered to monolith user |
+| `cross-app-queued` | Backend | Outbox row created |
+| `cross-app-heartbeat-delivered` | Backend | Rows delivered to backend user |
+
+---
+
+## 🎬 Part 7: Closing Points
+
+### 1. Rollback (The Safety Net)
+
+Flip one config flag, both apps revert to legacy in-memory behavior **instantly**:
+- Monolith: `cdrss.collaboration.mode=db` → OFF
+- Backend: `collaboration.store.mode=DB` → OFF
+
+**No code redeploy. No data migration. Instant rollback.** ✅
+
+### 2. Phase 2 (Future Work)
+
+Small follow-up enables fencing tokens:
+- Frontends send `X-Tab-Id` header (~20 lines each app)
+- Tab checks become real (Part 3, step 7)
+- Fencing token enforcement at save time
+
+### 3. Troubleshooting
+
+| Issue | Check |
+|-------|-------|
+| Users don't see each other's presence | `case_viewer_presence` table has recent rows; staleness threshold in query |
+| Lock conflicts not appearing cross-app | `case_section_lock` table; check feature flags |
+| Toasts not appearing | `case_update_notification` table (should be empty); check SSE connection health in browser console |
+| High table row counts | Cleanup jobs enabled? Check `collaboration.cleanup.enabled` flag and logs |
+
+---
+
+## 📚 Summary in One Sentence
+
+**The row sits in the outbox only until User A's browser next touches the notification endpoint—the server hands over ALL pending rows and deletes them in the same call, the browser's event listener turns them into a toast, and the table is empty again.**
+
+---
+
+## 🔍 Tips for Code Navigation
+
+- **Line numbers may drift** after rebases/merges. If a jump lands slightly off, search the symbol name from the "What It Does" column—names are stable.
+- **Always check the feature flag first** before diving into a flow (decide DB vs. legacy).
+- **Look for the router pattern:** `if (useDbStore())` appears everywhere—this is THE branching point.
+- **Follow the audit logs:** They tell you exactly which path executed.
