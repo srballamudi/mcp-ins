@@ -3,7 +3,7 @@ Go over this document and going forward follow this approach to pass parameters 
 If any questions, please get back to me.
 
 You can refer to this API /saveSignsSymptomsAttr.
-@PostMapping(value = "/saveSignsSymptomsAttr1233")
+@PostMapping(value = "/saveSignsSymptomsAttr")
 	@ResponseBody
 	public List<CdrCaseIdentifier> saveSignsSymptomsAttr(@RequestBody SaveSignsSymptomsAttrRequest request)
 			throws Exception {
