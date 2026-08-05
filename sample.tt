@@ -4,7 +4,8 @@ I went through the document, and I agree with the overall direction. Sending a J
 
 A few suggestions from my side:
 
-1.For signSympObj, we should avoid using Object and keep it strongly typed as List<CdrCaseIdentifier>. That gives better type safety and reduces runtime issues.
+1.I agree with the JSON + @RequestBody approach.
+ One clarification: in the sample DTO, signSympObj is shown as Object (“or proper class/POJO”), but based on our API usage (request.getSignSympObj() mapped to List<CdrCaseIdentifier>), we should keep it strongly typed as List<CdrCaseIdentifier> for type safety and validation. That gives better type safety and reduces runtime issues.
 
 2.Since our stack is already Java 17 + Spring Boot 3.x, we can use Java records for request DTOs to keep code cleaner and immutable. For example:
 public record SaveSignsSymptomsAttrRequest(
