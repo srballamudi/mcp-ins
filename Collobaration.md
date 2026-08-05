@@ -1,66 +1,84 @@
-**Where does collaborationSessionId come from?**
+# Collaboration Session ID and Lock Renewal
 
-**resolveCollaborationSessionId(request, authentication)**
+## Where does `collaborationSessionId` come from?
 
-******This method follows priority rules:**
-1. First choice: X-Collab-Session-Id header
-(not used in Phase 1)
-2. Second choice: HTTP session ID
-(Used in AngularJS)
-3. Third choice: Derived stable ID for JWT
-(using userId + browser fingerprint)
-4. Fourth choice: random UUID
-(only if all else fails)
-So collaborationSessionId looks like:****
+The `resolveCollaborationSessionId(request, authentication)` method follows these priority rules:
 
-"ABCD1234EFGH5678" (session ID)
-"user123:browser:a1b2c3d4" (JWT stateless fingerprint)
-or a fallback UUID
+1. **`X-Collab-Session-Id` header**
+   - Preferred source
+   - Not used in Phase 1
 
-Final synthetic tab ID (Phase 1)
-Examples:
-sess:ABCD1234EFGH5678
-sess:user123:browser:a1b2c3d4
-sess:7cc9e3d0-4581-4b41-9555-f66f2a44ecdf
+2. **HTTP session ID**
+   - Used in AngularJS
+
+3. **Derived stable ID for JWT**
+   - Built from `userId + browser fingerprint`
+
+4. **Random UUID**
+   - Used only if all other options fail
+
+### Example values
+
+`collaborationSessionId` can look like any of the following:
+
+- `ABCD1234EFGH5678` — HTTP session ID
+- `user123:browser:a1b2c3d4` — JWT-based stateless fingerprint
+- `7cc9e3d0-4581-4b41-9555-f66f2a44ecdf` — fallback UUID
+
+---
+
+## Final synthetic tab ID in Phase 1
+
+In Phase 1, the synthetic tab ID is built with the `sess:` prefix:
+
+- `sess:ABCD1234EFGH5678`
+- `sess:user123:browser:a1b2c3d4`
+- `sess:7cc9e3d0-4581-4b41-9555-f66f2a44ecdf`
 
 This acts as the synthetic tab ID.
 
-Why “sess:” prefix?
-is used to:
+### Why use the `sess:` prefix?
 
-Mark this value as fallback Phase 1 mode
-Tell the lock logic:
-“This is NOT an explicit tab ID from header”
-Maintain backward compatibility
-Make Phase 2 logic easier later
+The prefix is used to:
 
-When the Phase 2 header X-Tab-Id arrives:
+- Mark the value as fallback Phase 1 mode
+- Tell the lock logic that this is **not** an explicit tab ID from a header
+- Maintain backward compatibility
+- Make Phase 2 easier to introduce later
 
-"sess:<...>" = fallback
-"actual-tab-uuid" = explicit tab ID
+### When Phase 2 introduces `X-Tab-Id`
 
+The meaning becomes:
 
-============================
+- `sess:<...>` = fallback value
+- `actual-tab-uuid` = explicit tab ID
 
-The renew() method is part of the new distributed collaboration system, NOT part of legacy.
-Legacy “renew lock” used:
+---
 
-userId
-HTTP session
-in-memory map
-lockId only
+## Lock renewal behavior
 
-The new model uses:
+The `renew()` method belongs to the **new distributed collaboration system**, not the legacy implementation.
 
-lockToken (UUID)
-collaborationSessionId
-expiration timestamp
+### Legacy “renew lock” used:
 
-=============
-Resolve CollaborationPrincipal
-Backend builds the identity:
-fencing tokens (for stale lock prevention)
-DB persistence
-Internally:
+- `userId`
+- HTTP session
+- in-memory map
+- `lockId` only
 
-**it now hits lockStore.renew() (DB) instead of the legacy in-memory lock manager.**
+### New model uses:
+
+- `lockToken` (UUID)
+- `collaborationSessionId`
+- expiration timestamp
+
+---
+
+## Resolve CollaborationPrincipal
+
+The backend builds the identity and uses:
+
+- fencing tokens for stale-lock prevention
+- DB persistence
+
+Internally, it now calls `lockStore.renew()` in the database instead of the legacy in-memory lock manager.
