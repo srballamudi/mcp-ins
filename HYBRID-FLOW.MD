@@ -89,53 +89,38 @@ The journey continues: the user clicks into an editable section.
 | 1 | backend `CaseController.java : 1901` | This is the main entry point for lock acquisition.
 1. CaseController.java (line ~1901) – acquireLock(...) entry point
 This is the main entry point for lock acquisition.
-It mirrors the monolith’s CaseController.java:1691, ensuring identical API behavior.
-The controller routes the request into either the DB collaboration lock flow or the legacy in‑memory lock flow depending on configuration and input format.
+Step 1
+File: CaseController.java (around line 1901)
+Purpose: acquireLock(...) entry point
+Details: Mirrors monolith (CaseController.java around 1691). Routes the request into either the DB-backed lock flow or legacy in-memory arbitrator.
+Step 2
+File: CaseController.java (around line 4452)
+Purpose: parseLongOrNull(...) helper
+Details: Numeric IDs → DB collaboration lock flow.
+Non‑numeric IDs → legacy in-memory fallback.
+This is intentional routing, not validation.
+Same logic used in the monolith (around line 1814).
+Step 3
+File: DbLockStore.java (around line 107)
+Purpose: acquire(lockRecord) – atomic DB lock claim
+Details: Inserts a row into case_section_lock with lock_token, user, session, tab, and expiry.
+If a live lock exists → CONFLICT (return owner).
+If expired → treated as free.
+TTL ≈ 300 seconds.
+Step 4
+File: DbLockStore.java (lines 43, 65–66)
+Purpose: fencing_token sequence logic
+Details: Oracle sequence assigned at insert; incremented via NEXTVAL on renew.
+Provides monotonic fencing token for concurrency correctness in later phases.
+DDL default allows monolith to insert rows without needing fencing_token logic.
+Step 5
+File: CaseController acquire flow
+Purpose: Build legacy-compatible response
+Details: Response format unchanged:
+"isLocked" = "true" → caller acquired the lock
+"isLocked" = "false" + "lockedBy" → conflict
+On DB errors → do NOT fall back to legacy (avoids split-brain lock state).
 
-2. CaseController.java (line ~4452) – parseLongOrNull(...) helper
-This helper converts request parameters into numeric IDs.
-Its behavior is intentional:
-
-Numeric IDs → DB collaboration lock flow
-
-Non‑numeric IDs → legacy in‑memory arbitrator
-
-Some callers legitimately send non‑numeric section IDs (modals, older screens), so this is routing logic, not validation.
-The monolith uses the same approach (mirror at approx. line 1814).
-
-3. DbLockStore.java (line ~107) – acquire(lockRecord)
-This is the core DB-backed lock acquisition operation.
-It performs an atomic SQL insert into the case_section_lock table:
-
-One row per (case_id, section_id)
-Contains lock_token, user_id, session_id, tab_id, expires_at
-
-Behavior:
-
-If a live row already exists → CONFLICT (return the current lock owner).
-If the existing row is expired → treat the lock as free.
-
-TTL defaults to 300 seconds unless overridden.
-
-4. DbLockStore.java (lines 43 + 65–66) – fencing_token
-Each lock has a monotonically increasing fencing token, maintained by an Oracle sequence:
-
-Set by DB default on insert
-Incremented (NEXTVAL) every time a lock heartbeat/renew occurs
-
-This ensures safe concurrency in later phases of collaboration (Phase 2+).
-The DDL default allows the monolith to insert rows without being aware of fencing tokens.
-
-5. Response Contract (CaseController acquireLock)
-The REST API response remains identical to legacy:
-
-isLocked: "true"  → caller acquired the lock
-isLocked: "false" + lockedBy → caller lost the lock (conflict)
-
-Important:
-On DB error, the controller does not fall back to legacy locking.
-Falling back would create split‑brain lock ownership, allowing two users to edit simultaneously.
-This preserves consistent behavior between Monolith and Collaboration services.
 
 ⭐ Summary (One‑sentence purpose)
 This block implements the hybrid lock acquisition system, safely routing between the new DB-backed collaboration lock model and the legacy in-memory arbitrator, while maintaining identical API responses and avoiding split-brain locking during migration.
