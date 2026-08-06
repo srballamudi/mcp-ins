@@ -49,7 +49,23 @@ simple
 collision-free
 future-proof (new sections can appear without schema change)
 unified (only one locking table needed)
+---------------
+2. Sections that do NOT exist in the database
+These do not have real positive section IDs.
+Examples:
 
+“Case Header”
+“Summary Panel”
+“Notes Editor”
+“Attachments Panel”
+“Workflow timeline”
+“Case actions”
+Modal editors (dynamic)
+Future UI sections not yet defined in DB
+
+These are UI-only, dynamic, or not represented in your section tables.
+If a user can edit these areas, they must be lockable to prevent cross-user conflicts.
+But since they do not have a DB primary key, you must generate one → synthetic section ID.
 
 
 
