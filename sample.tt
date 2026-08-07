@@ -1,1 +1,5 @@
-cherry-pick/pr-10379-backendOnTomcat10
+git -C "C:\Users\askmb\DataJpa" status -sb
+git -C "C:\Users\askmb\DataJpa" add "src/main/java/com/example/datajpa/sampleprograms/PrimitiveStreams.java"
+git -C "C:\Users\askmb\DataJpa" commit -m "Update PrimitiveStreams examples"
+git -C "C:\Users\askmb\DataJpa" push -u mygithub feature/primitive-streams-update
+git -C "C:\Users\askmb\DataJpa" branch -vv
