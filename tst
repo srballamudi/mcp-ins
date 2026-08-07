@@ -39,3 +39,13 @@ git -C $RepoPath commit -m "Add collaboration, case management and config files"
 
 # Step 6: Push the clean branch
 git -C $RepoPath push -u mygithub clean-collaboration-updates
+
+---------
+
+It : Cannot process argument transformation on parameter 'test'. Cannot convert the "--orphan" value of type
+"System.String" to type "System.Management.Automation.ScriptBlock".
+At line:1 char:26
++ it -C $RepoPath checkout --orphan clean-collaboration-updates
++                          ~~~~~~~~
+    + CategoryInfo          : InvalidData: (:) [It], ParameterBindingArgumentTransformationException
+    + FullyQualifiedErrorId : ParameterArgumentTransformationError,It
