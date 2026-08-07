@@ -5,3 +5,34 @@ git -C "C:\Users\askmb\DataJpa" push -u mygithub feature/primitive-streams-updat
 git -C "C:\Users\askmb\DataJpa" branch -vv
 
 C:\cdrss2.0\njdoh-cdrss-backend-hybrid-design>
+
+
+src/main/java/gov/doh/cdrss/caseManagement/controller/CaseController.java
+src/main/java/gov/doh/cdrss/caseManagement/service/CaseServiceImpl.java
+/src/main/java/gov/doh/cdrss/collaboration/dao/DbCaseUpdateNotificationStore.java
+/src/main/java/gov/doh/cdrss/collaboration/dao/DbLockStore.java
+/src/main/java/gov/doh/cdrss/collaboration/dao/DbViewerStore.java
+/src/main/java/gov/doh/cdrss/collaboration/model/CaseSectionLockRecord.java
+/src/main/java/gov/doh/cdrss/collaboration/model/CaseViewerPresenceRecord.java
+/src/main/java/gov/doh/cdrss/collaboration/model/CollaborationPrincipal.java
+/src/main/java/gov/doh/cdrss/collaboration/service/CollaborationCleanupService.java
+/src/main/java/gov/doh/cdrss/collaboration/service/CollaborationPrincipalResolver.java
+/src/main/java/gov/doh/cdrss/collaboration/service/CollaborationStoreMode.java
+/src/main/java/gov/doh/cdrss/collaboration/service/CollaborationStoreRouter.java
+/src/main/java/gov/doh/cdrss/collaboration/service/LockService.java
+/src/main/java/gov/doh/cdrss/collaboration/service/LockServiceImpl.java
+/src/main/java/gov/doh/cdrss/collaboration/service/LockStore.java
+/src/main/java/gov/doh/cdrss/collaboration/service/ViewerService.java
+
+/src/main/java/gov/doh/cdrss/collaboration/service/ViewerServiceImpl.java
+/src/main/java/gov/doh/cdrss/collaboration/service/ViewerStore.java
+/src/main/java/gov/doh/cdrss/config/SecurityConfig.java
+/src/main/java/gov/doh/cdrss/login/service/CustomUserDetails.java
+/src/main/java/gov/doh/cdrss/user/controller/UserController.java
+/src/main/java/gov/doh/cdrss/CdrssApplication.java
+/src/main/java/gov/doh/cdrss/config/DatasourceConfiguration.java
+
+
+
+
+
