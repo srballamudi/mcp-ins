@@ -1,12 +1,8 @@
-$RepoPath = "C:\cdrss2.0\njdoh-cdrss-backend-hybrid-design"
-
-# Step 1: Create a brand-new branch with NO history
 git -C $RepoPath checkout --orphan clean-collaboration-updates
 
-# Step 2: Unstage everything (orphan checkout stages all files)
+
 git -C $RepoPath reset
 
-# Step 3: Stage ONLY your 23 files
 git -C $RepoPath add "src/main/java/gov/doh/cdrss/caseManagement/controller/CaseController.java"
 git -C $RepoPath add "src/main/java/gov/doh/cdrss/caseManagement/service/CaseServiceImpl.java"
 git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/dao/DbCaseUpdateNotificationStore.java"
@@ -31,21 +27,11 @@ git -C $RepoPath add "src/main/java/gov/doh/cdrss/user/controller/UserController
 git -C $RepoPath add "src/main/java/gov/doh/cdrss/CdrssApplication.java"
 git -C $RepoPath add "src/main/java/gov/doh/cdrss/config/DatasourceConfiguration.java"
 
-# Step 4: Verify ONLY those 23 files are staged (should list exactly your files)
 git -C $RepoPath diff --cached --name-only
 
-# Step 5: Commit (single commit, no old history, no jar)
 git -C $RepoPath commit -m "Add collaboration, case management and config files"
 
-# Step 6: Push the clean branch
 git -C $RepoPath push -u mygithub clean-collaboration-updates
 
----------
 
-It : Cannot process argument transformation on parameter 'test'. Cannot convert the "--orphan" value of type
-"System.String" to type "System.Management.Automation.ScriptBlock".
-At line:1 char:26
-+ it -C $RepoPath checkout --orphan clean-collaboration-updates
-+                          ~~~~~~~~
-    + CategoryInfo          : InvalidData: (:) [It], ParameterBindingArgumentTransformationException
-    + FullyQualifiedErrorId : ParameterArgumentTransformationError,It
+$RepoPath = "C:\cdrss2.0\njdoh-cdrss-backend-hybrid-design"
