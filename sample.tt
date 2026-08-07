@@ -35,8 +35,8 @@ src/main/java/gov/doh/cdrss/caseManagement/service/CaseServiceImpl.java
 ------------
 $RepoPath = "C:\cdrss2.0\njdoh-cdrss-backend-hybrid-desig"
 $RemoteName = "mygithub"
-$PersonalRepoUrl = "https://github.com/srballamudi/DataJpa.git"
 $BranchName = "feature/collaboration-updates"
+$PersonalRepoUrl = "https://github.com/srballamudi/DataJpa.git"
 
 # Step 1: Create and switch to your new branch
 git -C $RepoPath checkout -b $BranchName
@@ -66,20 +66,19 @@ git -C $RepoPath add "src/main/java/gov/doh/cdrss/user/controller/UserController
 git -C $RepoPath add "src/main/java/gov/doh/cdrss/CdrssApplication.java"
 git -C $RepoPath add "src/main/java/gov/doh/cdrss/config/DatasourceConfiguration.java"
 
-# Step 3: Verify exactly what is staged
+# Step 3: Verify staged files
 git -C $RepoPath diff --cached --name-only
 
 # Step 4: Commit
 git -C $RepoPath commit -m "Add collaboration, case management and config files"
 
-# Step 5: Add personal remote (skip if already exists)
+# Step 5: Add remote if not already added
 if (-not (git -C $RepoPath remote | Select-String $RemoteName)) {
     git -C $RepoPath remote add $RemoteName $PersonalRepoUrl
 }
 
-# Step 6: Push to your personal GitHub
+# Step 6: Push to personal GitHub
 git -C $RepoPath push -u $RemoteName $BranchName
-
 
 
 
