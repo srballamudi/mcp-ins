@@ -32,6 +32,54 @@ src/main/java/gov/doh/cdrss/caseManagement/service/CaseServiceImpl.java
 /src/main/java/gov/doh/cdrss/CdrssApplication.java
 /src/main/java/gov/doh/cdrss/config/DatasourceConfiguration.java
 
+------------
+$RepoPath = "C:\cdrss2.0\njdoh-cdrss-backend-hybrid-desig"
+$RemoteName = "mygithub"
+$PersonalRepoUrl = "https://github.com/srballamudi/DataJpa.git"
+$BranchName = "feature/collaboration-updates"
+
+# Step 1: Create and switch to your new branch
+git -C $RepoPath checkout -b $BranchName
+
+# Step 2: Stage only your selected files
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/caseManagement/controller/CaseController.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/caseManagement/service/CaseServiceImpl.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/dao/DbCaseUpdateNotificationStore.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/dao/DbLockStore.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/dao/DbViewerStore.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/model/CaseSectionLockRecord.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/model/CaseViewerPresenceRecord.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/model/CollaborationPrincipal.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/CollaborationCleanupService.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/CollaborationPrincipalResolver.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/CollaborationStoreMode.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/CollaborationStoreRouter.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/LockService.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/LockServiceImpl.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/LockStore.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/ViewerService.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/ViewerServiceImpl.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/collaboration/service/ViewerStore.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/config/SecurityConfig.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/login/service/CustomUserDetails.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/user/controller/UserController.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/CdrssApplication.java"
+git -C $RepoPath add "src/main/java/gov/doh/cdrss/config/DatasourceConfiguration.java"
+
+# Step 3: Verify exactly what is staged
+git -C $RepoPath diff --cached --name-only
+
+# Step 4: Commit
+git -C $RepoPath commit -m "Add collaboration, case management and config files"
+
+# Step 5: Add personal remote (skip if already exists)
+if (-not (git -C $RepoPath remote | Select-String $RemoteName)) {
+    git -C $RepoPath remote add $RemoteName $PersonalRepoUrl
+}
+
+# Step 6: Push to your personal GitHub
+git -C $RepoPath push -u $RemoteName $BranchName
+
 
 
 
