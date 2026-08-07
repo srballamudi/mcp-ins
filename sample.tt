@@ -33,7 +33,7 @@ src/main/java/gov/doh/cdrss/caseManagement/service/CaseServiceImpl.java
 /src/main/java/gov/doh/cdrss/config/DatasourceConfiguration.java
 
 ------------
-$RepoPath = "C:\cdrss2.0\njdoh-cdrss-backend-hybrid-desig"
+$RepoPath = "C:\cdrss2.0\njdoh-cdrss-backend-hybrid-design"
 $RemoteName = "mygithub"
 $BranchName = "feature/collaboration-updates"
 $PersonalRepoUrl = "https://github.com/srballamudi/DataJpa.git"
@@ -73,5 +73,3 @@ if (-not (git -C $RepoPath remote | Select-String $RemoteName)) {
 }
 
 git -C $RepoPath push -u mygithub feature/collaboration-updates
-
-
